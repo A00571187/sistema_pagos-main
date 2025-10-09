@@ -2,6 +2,7 @@ import argparse
 from dataclasses import dataclass
 from typing import Dict, Any, List
 import pandas as pd
+from typing import List, Optional
 
 
 DECISION_ACCEPTED = "ACCEPTED"
@@ -54,23 +55,22 @@ def high_amount(amount: float, product_type: str, thresholds: Dict[str, Any]) ->
     return amount >= t
 
 
-# === Helpers de acumulación ===================================================
+
+
 @dataclass
 class ScoreBuilder:
     score: int = 0
-    reasons: List[str] = None
-
-    def __post_init__(self):
-        if self.reasons is None:
-            self.reasons = []
+    reasons: Optional[List[str]] = field(default_factory=list)
 
     def add(self, points: int, reason: str):
         if points != 0:
             self.score += points
-            self.reasons.append(f"{reason}(+{points})" if points > 0 else f"{reason}({points})")
+            sign = "+" if points > 0 else ""
+            self.reasons.append(f"{reason}({sign}{points})")
 
     def text_reasons(self) -> str:
         return ";".join(self.reasons)
+
 
 
 # === Helpers de lectura segura ===============================================
