@@ -66,9 +66,9 @@ def test_transaction_accepted_low_risk_trusted_user():
     assert data["risk_score"] < 4
 
 
-def test_transaction_accepted_good_user_normal_activity():
+def test_transaction_accepted_recurrent_user_normal_activity():
     """
-    Good user with moderate transaction history during business hours.
+    Recurrent user with moderate transaction history during business hours.
     Expected: ACCEPTED.
     """
     body = {
@@ -81,7 +81,7 @@ def test_transaction_accepted_good_user_normal_activity():
         "hour": 11,
         "product_type": "physical",
         "latency_ms": 120,
-        "user_reputation": "good",
+        "user_reputation": "recurrent",
         "device_fingerprint_risk": "low",
         "ip_risk": "low",
         "email_risk": "low",
@@ -173,7 +173,7 @@ def test_transaction_in_review_country_mismatch():
         "hour": 16,
         "product_type": "physical",
         "latency_ms": 150,
-        "user_reputation": "good",
+        "user_reputation": "recurrent",
         "device_fingerprint_risk": "low",
         "ip_risk": "low",
         "email_risk": "low",
@@ -202,7 +202,7 @@ def test_transaction_in_review_medium_ip_risk():
         "hour": 6,
         "product_type": "digital",
         "latency_ms": 220,
-        "user_reputation": "good",
+        "user_reputation": "recurrent",
         "device_fingerprint_risk": "low",
         "ip_risk": "medium",
         "email_risk": "new_domain",
@@ -309,8 +309,8 @@ def test_transaction_rejected_hard_block_chargebacks():
 
 def test_transaction_rejected_multiple_red_flags():
     """
-    Multiple high-risk signals: large amount, suspicious user, country mismatch,
-    high device/IP risk, late night, disposable email.
+    Multiple high-risk signals: large amount, high_risk user, country mismatch,
+    high device/IP risk, late night, high email risk.
     Expected: REJECTED due to accumulated high risk score.
     """
     body = {
@@ -323,10 +323,10 @@ def test_transaction_rejected_multiple_red_flags():
         "hour": 3,
         "product_type": "digital",
         "latency_ms": 450,
-        "user_reputation": "suspicious",
+        "user_reputation": "high_risk",
         "device_fingerprint_risk": "high",
         "ip_risk": "high",
-        "email_risk": "disposable",
+        "email_risk": "high",
         "bin_country": "MX",
         "ip_country": "US"
     }
@@ -338,9 +338,9 @@ def test_transaction_rejected_multiple_red_flags():
     assert data["risk_score"] >= 10
 
 
-def test_transaction_rejected_suspicious_user_high_amount():
+def test_transaction_rejected_high_risk_user_high_amount():
     """
-    Suspicious user attempting very high amount transaction.
+    High risk user attempting very high amount transaction.
     Expected: REJECTED due to user reputation + amount.
     """
     body = {
@@ -353,10 +353,10 @@ def test_transaction_rejected_suspicious_user_high_amount():
         "hour": 2,
         "product_type": "digital",
         "latency_ms": 320,
-        "user_reputation": "suspicious",
+        "user_reputation": "high_risk",
         "device_fingerprint_risk": "medium",
         "ip_risk": "high",
-        "email_risk": "disposable",
+        "email_risk": "high",
         "bin_country": "MX",
         "ip_country": "MX"
     }
@@ -396,10 +396,10 @@ def test_transaction_rejected_high_device_and_ip_risk():
     assert data["decision"] == "REJECTED"
 
 
-def test_transaction_rejected_extreme_latency_suspicious():
+def test_transaction_rejected_extreme_latency_high_risk():
     """
     Extremely high latency (>500ms) suggesting bot/automated fraud attempt
-    with suspicious reputation.
+    with high_risk reputation.
     Expected: REJECTED due to velocity + reputation.
     """
     body = {
@@ -412,10 +412,10 @@ def test_transaction_rejected_extreme_latency_suspicious():
         "hour": 1,
         "product_type": "digital",
         "latency_ms": 650,
-        "user_reputation": "suspicious",
+        "user_reputation": "high_risk",
         "device_fingerprint_risk": "high",
         "ip_risk": "medium",
-        "email_risk": "disposable",
+        "email_risk": "high",
         "bin_country": "MX",
         "ip_country": "BR"
     }
@@ -504,7 +504,7 @@ def test_transaction_zero_amount():
         "hour": 14,
         "product_type": "digital",
         "latency_ms": 90,
-        "user_reputation": "good",
+        "user_reputation": "recurrent",
         "device_fingerprint_risk": "low",
         "ip_risk": "low",
         "email_risk": "low",
@@ -626,7 +626,7 @@ def test_transaction_high_velocity_established_user():
         "hour": 18,
         "product_type": "digital",
         "latency_ms": 520,
-        "user_reputation": "good",
+        "user_reputation": "recurrent",
         "device_fingerprint_risk": "low",
         "ip_risk": "low",
         "email_risk": "low",
@@ -640,9 +640,9 @@ def test_transaction_high_velocity_established_user():
     assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
 
 
-def test_transaction_disposable_email_low_amount():
+def test_transaction_high_email_risk_low_amount():
     """
-    Disposable email with low amount and otherwise clean profile.
+    High email risk with low amount and otherwise clean profile.
     Expected: IN_REVIEW (email is suspicious but low financial risk).
     """
     body = {
@@ -658,7 +658,7 @@ def test_transaction_disposable_email_low_amount():
         "user_reputation": "new",
         "device_fingerprint_risk": "low",
         "ip_risk": "low",
-        "email_risk": "disposable",
+        "email_risk": "high",
         "bin_country": "MX",
         "ip_country": "MX"
     }
@@ -685,7 +685,7 @@ def test_transaction_one_chargeback_recovery_path():
         "hour": 14,
         "product_type": "physical",
         "latency_ms": 110,
-        "user_reputation": "good",
+        "user_reputation": "recurrent",
         "device_fingerprint_risk": "low",
         "ip_risk": "low",
         "email_risk": "low",
