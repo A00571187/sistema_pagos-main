@@ -1,9 +1,7 @@
 import argparse
 from dataclasses import dataclass
-from typing import Dict, Any, List
+from typing import Dict, Any, List, List, Optional
 import pandas as pd
-from typing import List, Optional
-
 
 DECISION_ACCEPTED = "ACCEPTED"
 DECISION_IN_REVIEW = "IN_REVIEW"
