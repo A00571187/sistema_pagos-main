@@ -1,6 +1,6 @@
 import argparse
-from dataclasses import dataclass
-from typing import Dict, Any, List, List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, Any, List, Optional
 import pandas as pd
 
 DECISION_ACCEPTED = "ACCEPTED"
@@ -53,8 +53,6 @@ def high_amount(amount: float, product_type: str, thresholds: Dict[str, Any]) ->
     return amount >= t
 
 
-
-
 @dataclass
 class ScoreBuilder:
     score: int = 0
@@ -68,7 +66,6 @@ class ScoreBuilder:
 
     def text_reasons(self) -> str:
         return ";".join(self.reasons)
-
 
 
 # === Helpers de lectura segura ===============================================
@@ -183,7 +180,6 @@ def assess_row(row: pd.Series, cfg: Dict[str, Any]) -> Dict[str, Any]:
     # 4) Decisión
     decision = _map_score_to_decision(sb.score, cfg)
     return {"decision": decision, "risk_score": int(sb.score), "reasons": sb.text_reasons()}
-
 
 
 def run(input_csv: str, output_csv: str, config: Dict[str, Any] = None) -> pd.DataFrame:
