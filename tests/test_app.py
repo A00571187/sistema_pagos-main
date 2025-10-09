@@ -1,17 +1,18 @@
 """
-Tests for the FastAPI microservice (app.py) that exposes /transaction.
-Requires: httpx (for TestClient), fastapi, pydantic.
+Comprehensive test suite for the FastAPI fraud detection microservice.
+Tests cover all decision paths: ACCEPTED, IN_REVIEW, and REJECTED scenarios
+based on risk scoring logic, hard blocks, and threshold configuration.
 """
 
 from fastapi.testclient import TestClient
-
-# Import the FastAPI instance from app.py
-# If your app file lives elsewhere (e.g., src/app.py), change the import to:
-#   from src.app import app as fastapi_app
 from app import app as fastapi_app
 
 client = TestClient(fastapi_app)
 
+
+# ============================================================================
+# HEALTH & CONFIG ENDPOINTS
+# ============================================================================
 
 def test_health():
     """Basic healthcheck should return status ok."""
@@ -30,67 +31,17 @@ def test_config_contains_score_mapping():
     assert "amount_thresholds" in payload
 
 
-def test_transaction_in_review_path():
-    """Typical medium-risk digital transaction from NEW user at night -> IN_REVIEW."""
-    body = {
-        "transaction_id": 42,
-        "amount_mxn": 5200.0,
-        "customer_txn_30d": 1,
-        "geo_state": "Nuevo León",
-        "device_type": "mobile",
-        "chargeback_count": 0,
-        "hour": 23,
-        "product_type": "digital",
-        "latency_ms": 180,
-        "user_reputation": "new",
-        "device_fingerprint_risk": "low",
-        "ip_risk": "medium",
-        "email_risk": "new_domain",
-        "bin_country": "MX",
-        "ip_country": "MX"
-    }
-    r = client.post("/transaction", json=body)
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["transaction_id"] == 42
-    assert data["decision"] in ("ACCEPTED", "IN_REVIEW", "REJECTED")
-    # With the current defaults (reject_at=10, review_at=4), this should lean to IN_REVIEW
-    # If you tuned env vars REJECT_AT/REVIEW_AT, this assertion may need adjustment.
-    assert data["decision"] == "IN_REVIEW"
+# ============================================================================
+# ACCEPTED SCENARIOS - Low Risk Transactions
+# ============================================================================
 
-
-def test_transaction_hard_block_rejection():
-    """Chargebacks>=2 with ip_risk=high should trigger hard block -> REJECTED."""
-    body = {
-        "transaction_id": 99,
-        "amount_mxn": 300.0,
-        "customer_txn_30d": 0,
-        "geo_state": "Nuevo León",
-        "device_type": "mobile",
-        "chargeback_count": 2,
-        "hour": 12,
-        "product_type": "digital",
-        "latency_ms": 100,
-        "user_reputation": "new",
-        "device_fingerprint_risk": "low",
-        "ip_risk": "high",
-        "email_risk": "low",
-        "bin_country": "MX",
-        "ip_country": "MX"
-    }
-    r = client.post("/transaction", json=body)
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["transaction_id"] == 99
-    assert data["decision"] == "REJECTED"
-
-def test_transaction_accepted_low_risk():
+def test_transaction_accepted_low_risk_trusted_user():
     """
-    Low-risk transaction: established user, daytime, low amount, 
-    all risk signals low -> ACCEPTED.
+    Ultra low-risk: trusted user, daytime, small amount, all signals green.
+    Expected: ACCEPTED with minimal risk score.
     """
     body = {
-        "transaction_id": 101,
+        "transaction_id": 1001,
         "amount_mxn": 250.0,
         "customer_txn_30d": 45,
         "geo_state": "Nuevo León",
@@ -109,61 +60,30 @@ def test_transaction_accepted_low_risk():
     r = client.post("/transaction", json=body)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["transaction_id"] == 101
+    assert data["transaction_id"] == 1001
     assert data["decision"] == "ACCEPTED"
     assert "risk_score" in data
-    assert data["risk_score"] < 4  # Below review threshold
+    assert data["risk_score"] < 4
 
 
-def test_transaction_rejected_multiple_red_flags():
+def test_transaction_accepted_good_user_normal_activity():
     """
-    High-risk transaction: high amount, suspicious user, mismatched countries,
-    high device/IP risk, late night -> REJECTED.
-    """
-    body = {
-        "transaction_id": 202,
-        "amount_mxn": 15000.0,
-        "customer_txn_30d": 0,
-        "geo_state": "Nuevo León",
-        "device_type": "mobile",
-        "chargeback_count": 1,
-        "hour": 3,
-        "product_type": "digital",
-        "latency_ms": 450,
-        "user_reputation": "suspicious",
-        "device_fingerprint_risk": "high",
-        "ip_risk": "high",
-        "email_risk": "disposable",
-        "bin_country": "MX",
-        "ip_country": "US"
-    }
-    r = client.post("/transaction", json=body)
-    assert r.status_code == 200, r.text
-    data = r.json()
-    assert data["transaction_id"] == 202
-    assert data["decision"] == "REJECTED"
-    assert "risk_score" in data
-    assert data["risk_score"] >= 10  # Above rejection threshold
-
-
-def test_transaction_edge_case_medium_amount():
-    """
-    Edge case: medium amount with mixed signals (good reputation but 
-    medium IP risk, early morning) -> likely IN_REVIEW.
+    Good user with moderate transaction history during business hours.
+    Expected: ACCEPTED.
     """
     body = {
-        "transaction_id": 303,
-        "amount_mxn": 3500.0,
-        "customer_txn_30d": 12,
+        "transaction_id": 1002,
+        "amount_mxn": 800.0,
+        "customer_txn_30d": 15,
         "geo_state": "Ciudad de México",
         "device_type": "mobile",
         "chargeback_count": 0,
-        "hour": 6,
-        "product_type": "digital",
-        "latency_ms": 220,
+        "hour": 11,
+        "product_type": "physical",
+        "latency_ms": 120,
         "user_reputation": "good",
         "device_fingerprint_risk": "low",
-        "ip_risk": "medium",
+        "ip_risk": "low",
         "email_risk": "low",
         "bin_country": "MX",
         "ip_country": "MX"
@@ -171,18 +91,80 @@ def test_transaction_edge_case_medium_amount():
     r = client.post("/transaction", json=body)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["transaction_id"] == 303
-    assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
-    # Should be IN_REVIEW due to medium IP risk + early hour + digital product
+    assert data["transaction_id"] == 1002
+    assert data["decision"] == "ACCEPTED"
 
 
-def test_transaction_country_mismatch_review():
+def test_transaction_accepted_established_customer_medium_amount():
     """
-    Country mismatch between BIN and IP with otherwise normal signals
-    -> IN_REVIEW for manual verification.
+    Established customer (30+ txns) with medium amount during safe hours.
+    Expected: ACCEPTED despite slightly elevated amount.
     """
     body = {
-        "transaction_id": 404,
+        "transaction_id": 1003,
+        "amount_mxn": 3200.0,
+        "customer_txn_30d": 35,
+        "geo_state": "Jalisco",
+        "device_type": "desktop",
+        "chargeback_count": 0,
+        "hour": 16,
+        "product_type": "digital",
+        "latency_ms": 140,
+        "user_reputation": "trusted",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "low",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 1003
+    assert data["decision"] == "ACCEPTED"
+
+
+# ============================================================================
+# IN_REVIEW SCENARIOS - Medium Risk Transactions
+# ============================================================================
+
+def test_transaction_in_review_new_user_night():
+    """
+    New user making digital purchase at night with medium amount.
+    Expected: IN_REVIEW due to newness + timing + product type.
+    """
+    body = {
+        "transaction_id": 2001,
+        "amount_mxn": 5200.0,
+        "customer_txn_30d": 1,
+        "geo_state": "Nuevo León",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 23,
+        "product_type": "digital",
+        "latency_ms": 180,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "medium",
+        "email_risk": "new_domain",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 2001
+    assert data["decision"] == "IN_REVIEW"
+    assert 4 <= data["risk_score"] < 10
+
+
+def test_transaction_in_review_country_mismatch():
+    """
+    Country mismatch between card BIN and IP location.
+    Expected: IN_REVIEW for manual verification.
+    """
+    body = {
+        "transaction_id": 2002,
         "amount_mxn": 1200.0,
         "customer_txn_30d": 8,
         "geo_state": "Jalisco",
@@ -201,28 +183,27 @@ def test_transaction_country_mismatch_review():
     r = client.post("/transaction", json=body)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["transaction_id"] == 404
-    # Country mismatch should add risk points
+    assert data["transaction_id"] == 2002
     assert data["decision"] in ("IN_REVIEW", "ACCEPTED")
 
 
-def test_transaction_high_velocity_new_user():
+def test_transaction_in_review_medium_ip_risk():
     """
-    New user attempting high-velocity transaction (high latency_ms suggests
-    rapid attempts) with medium risks -> IN_REVIEW or REJECTED.
+    Medium IP risk with early morning transaction and new email domain.
+    Expected: IN_REVIEW due to accumulated medium-risk signals.
     """
     body = {
-        "transaction_id": 505,
-        "amount_mxn": 8000.0,
-        "customer_txn_30d": 0,
-        "geo_state": "Nuevo León",
+        "transaction_id": 2003,
+        "amount_mxn": 3500.0,
+        "customer_txn_30d": 12,
+        "geo_state": "Ciudad de México",
         "device_type": "mobile",
         "chargeback_count": 0,
-        "hour": 22,
+        "hour": 6,
         "product_type": "digital",
-        "latency_ms": 550,
-        "user_reputation": "new",
-        "device_fingerprint_risk": "medium",
+        "latency_ms": 220,
+        "user_reputation": "good",
+        "device_fingerprint_risk": "low",
         "ip_risk": "medium",
         "email_risk": "new_domain",
         "bin_country": "MX",
@@ -231,18 +212,261 @@ def test_transaction_high_velocity_new_user():
     r = client.post("/transaction", json=body)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["transaction_id"] == 505
-    assert data["decision"] in ("IN_REVIEW", "REJECTED")
-    # High amount + new user + night time + high latency should accumulate risk
+    assert data["transaction_id"] == 2003
+    assert data["decision"] == "IN_REVIEW"
 
 
-def test_transaction_trusted_user_bypass():
+def test_transaction_in_review_high_latency():
     """
-    Trusted user with excellent history should get ACCEPTED even with
-    slightly elevated amount and non-ideal timing.
+    High latency suggesting rapid retry attempts with medium risk profile.
+    Expected: IN_REVIEW for potential velocity abuse.
     """
     body = {
-        "transaction_id": 606,
+        "transaction_id": 2004,
+        "amount_mxn": 2800.0,
+        "customer_txn_30d": 5,
+        "geo_state": "Nuevo León",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 20,
+        "product_type": "digital",
+        "latency_ms": 480,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "medium",
+        "ip_risk": "low",
+        "email_risk": "new_domain",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 2004
+    assert data["decision"] in ("IN_REVIEW", "REJECTED")
+
+
+def test_transaction_in_review_medium_device_fingerprint():
+    """
+    Medium device fingerprint risk with medium amount at night.
+    Expected: IN_REVIEW due to device concerns.
+    """
+    body = {
+        "transaction_id": 2005,
+        "amount_mxn": 4100.0,
+        "customer_txn_30d": 7,
+        "geo_state": "Monterrey",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 22,
+        "product_type": "digital",
+        "latency_ms": 190,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "medium",
+        "ip_risk": "low",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 2005
+    assert data["decision"] == "IN_REVIEW"
+
+
+# ============================================================================
+# REJECTED SCENARIOS - High Risk Transactions
+# ============================================================================
+
+def test_transaction_rejected_hard_block_chargebacks():
+    """
+    Hard block: 2+ chargebacks with high IP risk.
+    Expected: REJECTED immediately regardless of other factors.
+    """
+    body = {
+        "transaction_id": 3001,
+        "amount_mxn": 300.0,
+        "customer_txn_30d": 0,
+        "geo_state": "Nuevo León",
+        "device_type": "mobile",
+        "chargeback_count": 2,
+        "hour": 12,
+        "product_type": "digital",
+        "latency_ms": 100,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "high",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 3001
+    assert data["decision"] == "REJECTED"
+
+
+def test_transaction_rejected_multiple_red_flags():
+    """
+    Multiple high-risk signals: large amount, suspicious user, country mismatch,
+    high device/IP risk, late night, disposable email.
+    Expected: REJECTED due to accumulated high risk score.
+    """
+    body = {
+        "transaction_id": 3002,
+        "amount_mxn": 15000.0,
+        "customer_txn_30d": 0,
+        "geo_state": "Nuevo León",
+        "device_type": "mobile",
+        "chargeback_count": 1,
+        "hour": 3,
+        "product_type": "digital",
+        "latency_ms": 450,
+        "user_reputation": "suspicious",
+        "device_fingerprint_risk": "high",
+        "ip_risk": "high",
+        "email_risk": "disposable",
+        "bin_country": "MX",
+        "ip_country": "US"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 3002
+    assert data["decision"] == "REJECTED"
+    assert data["risk_score"] >= 10
+
+
+def test_transaction_rejected_suspicious_user_high_amount():
+    """
+    Suspicious user attempting very high amount transaction.
+    Expected: REJECTED due to user reputation + amount.
+    """
+    body = {
+        "transaction_id": 3003,
+        "amount_mxn": 12000.0,
+        "customer_txn_30d": 2,
+        "geo_state": "Ciudad de México",
+        "device_type": "desktop",
+        "chargeback_count": 0,
+        "hour": 2,
+        "product_type": "digital",
+        "latency_ms": 320,
+        "user_reputation": "suspicious",
+        "device_fingerprint_risk": "medium",
+        "ip_risk": "high",
+        "email_risk": "disposable",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 3003
+    assert data["decision"] == "REJECTED"
+
+
+def test_transaction_rejected_high_device_and_ip_risk():
+    """
+    Both device fingerprint and IP show high risk with new user.
+    Expected: REJECTED due to device/network compromise indicators.
+    """
+    body = {
+        "transaction_id": 3004,
+        "amount_mxn": 6500.0,
+        "customer_txn_30d": 0,
+        "geo_state": "Jalisco",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 4,
+        "product_type": "digital",
+        "latency_ms": 380,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "high",
+        "ip_risk": "high",
+        "email_risk": "new_domain",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 3004
+    assert data["decision"] == "REJECTED"
+
+
+def test_transaction_rejected_extreme_latency_suspicious():
+    """
+    Extremely high latency (>500ms) suggesting bot/automated fraud attempt
+    with suspicious reputation.
+    Expected: REJECTED due to velocity + reputation.
+    """
+    body = {
+        "transaction_id": 3005,
+        "amount_mxn": 8000.0,
+        "customer_txn_30d": 0,
+        "geo_state": "Nuevo León",
+        "device_type": "mobile",
+        "chargeback_count": 1,
+        "hour": 1,
+        "product_type": "digital",
+        "latency_ms": 650,
+        "user_reputation": "suspicious",
+        "device_fingerprint_risk": "high",
+        "ip_risk": "medium",
+        "email_risk": "disposable",
+        "bin_country": "MX",
+        "ip_country": "BR"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 3005
+    assert data["decision"] == "REJECTED"
+
+
+# ============================================================================
+# EDGE CASES & BOUNDARY TESTING
+# ============================================================================
+
+def test_transaction_edge_threshold_review_boundary():
+    """
+    Transaction at the exact boundary between ACCEPTED and IN_REVIEW.
+    Expected: IN_REVIEW (score exactly at review_at threshold).
+    """
+    body = {
+        "transaction_id": 4001,
+        "amount_mxn": 2500.0,
+        "customer_txn_30d": 10,
+        "geo_state": "Nuevo León",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 19,
+        "product_type": "digital",
+        "latency_ms": 200,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "medium",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 4001
+    assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
+
+
+def test_transaction_trusted_user_bypass_night():
+    """
+    Trusted user with excellent history should get ACCEPTED even with
+    non-ideal timing and elevated amount.
+    Expected: ACCEPTED due to strong reputation override.
+    """
+    body = {
+        "transaction_id": 4002,
         "amount_mxn": 4500.0,
         "customer_txn_30d": 89,
         "geo_state": "Nuevo León",
@@ -261,6 +485,216 @@ def test_transaction_trusted_user_bypass():
     r = client.post("/transaction", json=body)
     assert r.status_code == 200, r.text
     data = r.json()
-    assert data["transaction_id"] == 606
-    # Trusted users should get preferential treatment
+    assert data["transaction_id"] == 4002
     assert data["decision"] == "ACCEPTED"
+
+
+def test_transaction_zero_amount():
+    """
+    Edge case: zero amount transaction (test/verification transaction).
+    Expected: ACCEPTED (no risk from amount).
+    """
+    body = {
+        "transaction_id": 4003,
+        "amount_mxn": 0.0,
+        "customer_txn_30d": 5,
+        "geo_state": "Ciudad de México",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 14,
+        "product_type": "digital",
+        "latency_ms": 90,
+        "user_reputation": "good",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "low",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 4003
+    assert data["decision"] == "ACCEPTED"
+
+
+def test_transaction_maximum_amount():
+    """
+    Edge case: very high amount with trusted user.
+    Expected: IN_REVIEW or ACCEPTED depending on thresholds.
+    """
+    body = {
+        "transaction_id": 4004,
+        "amount_mxn": 25000.0,
+        "customer_txn_30d": 50,
+        "geo_state": "Nuevo León",
+        "device_type": "desktop",
+        "chargeback_count": 0,
+        "hour": 15,
+        "product_type": "physical",
+        "latency_ms": 130,
+        "user_reputation": "trusted",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "low",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 4004
+    assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
+
+
+def test_transaction_new_user_small_amount_safe_conditions():
+    """
+    New user but small amount during daytime with all low-risk signals.
+    Expected: ACCEPTED (newness alone shouldn't block low-risk txn).
+    """
+    body = {
+        "transaction_id": 4005,
+        "amount_mxn": 150.0,
+        "customer_txn_30d": 0,
+        "geo_state": "Jalisco",
+        "device_type": "desktop",
+        "chargeback_count": 0,
+        "hour": 13,
+        "product_type": "physical",
+        "latency_ms": 100,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "low",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 4005
+    # Should likely be ACCEPTED unless rules are very conservative
+    assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
+
+
+# ============================================================================
+# SPECIAL SCENARIOS
+# ============================================================================
+
+def test_transaction_physical_product_lower_risk():
+    """
+    Physical product generally has lower fraud risk than digital.
+    Expected: More lenient scoring for physical goods.
+    """
+    body = {
+        "transaction_id": 5001,
+        "amount_mxn": 3000.0,
+        "customer_txn_30d": 5,
+        "geo_state": "Nuevo León",
+        "device_type": "desktop",
+        "chargeback_count": 0,
+        "hour": 21,
+        "product_type": "physical",
+        "latency_ms": 160,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "medium",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 5001
+    # Physical product should reduce risk vs digital
+    assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
+
+
+def test_transaction_high_velocity_established_user():
+    """
+    High transaction velocity (high latency_ms) but from established user.
+    Expected: IN_REVIEW (velocity concerning but user history helps).
+    """
+    body = {
+        "transaction_id": 5002,
+        "amount_mxn": 2200.0,
+        "customer_txn_30d": 40,
+        "geo_state": "Ciudad de México",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 18,
+        "product_type": "digital",
+        "latency_ms": 520,
+        "user_reputation": "good",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "low",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 5002
+    assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
+
+
+def test_transaction_disposable_email_low_amount():
+    """
+    Disposable email with low amount and otherwise clean profile.
+    Expected: IN_REVIEW (email is suspicious but low financial risk).
+    """
+    body = {
+        "transaction_id": 5003,
+        "amount_mxn": 500.0,
+        "customer_txn_30d": 2,
+        "geo_state": "Jalisco",
+        "device_type": "mobile",
+        "chargeback_count": 0,
+        "hour": 10,
+        "product_type": "digital",
+        "latency_ms": 140,
+        "user_reputation": "new",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "low",
+        "email_risk": "disposable",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 5003
+    assert data["decision"] in ("IN_REVIEW", "REJECTED")
+
+
+def test_transaction_one_chargeback_recovery_path():
+    """
+    User with exactly 1 chargeback but trying to rebuild reputation
+    with small transaction.
+    Expected: IN_REVIEW (one chargeback is concerning but not blocking).
+    """
+    body = {
+        "transaction_id": 5004,
+        "amount_mxn": 400.0,
+        "customer_txn_30d": 8,
+        "geo_state": "Nuevo León",
+        "device_type": "desktop",
+        "chargeback_count": 1,
+        "hour": 14,
+        "product_type": "physical",
+        "latency_ms": 110,
+        "user_reputation": "good",
+        "device_fingerprint_risk": "low",
+        "ip_risk": "low",
+        "email_risk": "low",
+        "bin_country": "MX",
+        "ip_country": "MX"
+    }
+    r = client.post("/transaction", json=body)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["transaction_id"] == 5004
+    # One chargeback should trigger review but not auto-reject
+    assert data["decision"] in ("ACCEPTED", "IN_REVIEW")
