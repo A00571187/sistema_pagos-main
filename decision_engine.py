@@ -1,6 +1,8 @@
 import argparse
-import pandas as pd
+from dataclasses import dataclass
 from typing import Dict, Any, List
+import pandas as pd
+
 
 DECISION_ACCEPTED = "ACCEPTED"
 DECISION_IN_REVIEW = "IN_REVIEW"
@@ -51,81 +53,140 @@ def high_amount(amount: float, product_type: str, thresholds: Dict[str, Any]) ->
     t = thresholds.get(product_type, thresholds.get("_default"))
     return amount >= t
 
-def assess_row(row: pd.Series, cfg: Dict[str, Any]) -> Dict[str, Any]:
-    score = 0
-    reasons: List[str] = []
 
-    # Hard block: repeated chargebacks + high IP risk
-    if int(row.get("chargeback_count", 0)) >= cfg["chargeback_hard_block"] and str(row.get("ip_risk", "low")).lower() == "high":
-        reasons.append("hard_block:chargebacks>=2+ip_high")
-        return {"decision": DECISION_REJECTED, "risk_score": 100, "reasons": ";".join(reasons)}
+# === Helpers de acumulación ===================================================
+@dataclass
+class ScoreBuilder:
+    score: int = 0
+    reasons: List[str] = None
 
-    # Categorical risks
-    for field, mapping in [("ip_risk", cfg["score_weights"]["ip_risk"]),
-                           ("email_risk", cfg["score_weights"]["email_risk"]),
-                           ("device_fingerprint_risk", cfg["score_weights"]["device_fingerprint_risk"])]:
-        val = str(row.get(field, "low")).lower()
+    def __post_init__(self):
+        if self.reasons is None:
+            self.reasons = []
+
+    def add(self, points: int, reason: str):
+        if points != 0:
+            self.score += points
+            self.reasons.append(f"{reason}(+{points})" if points > 0 else f"{reason}({points})")
+
+    def text_reasons(self) -> str:
+        return ";".join(self.reasons)
+
+
+# === Helpers de lectura segura ===============================================
+def _as_int(value, default=0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+def _as_float(value, default=0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+def _as_lower_str(value, default="") -> str:
+    return str(value if value is not None else default).lower()
+
+def _as_upper_str(value, default="") -> str:
+    return str(value if value is not None else default).upper()
+
+
+# === Reglas atómicas ==========================================================
+def _hard_block(row: pd.Series, cfg: Dict[str, Any]) -> bool:
+    chargebacks = _as_int(row.get("chargeback_count", 0))
+    ip_high = _as_lower_str(row.get("ip_risk", "low")) == "high"
+    return chargebacks >= cfg["chargeback_hard_block"] and ip_high
+
+def _apply_categorical_risks(sb: ScoreBuilder, row: pd.Series, cfg: Dict[str, Any]):
+    for field, mapping in [
+        ("ip_risk", cfg["score_weights"]["ip_risk"]),
+        ("email_risk", cfg["score_weights"]["email_risk"]),
+        ("device_fingerprint_risk", cfg["score_weights"]["device_fingerprint_risk"]),
+    ]:
+        val = _as_lower_str(row.get(field, "low"), "low")
         add = mapping.get(val, 0)
-        score += add
         if add:
-            reasons.append(f"{field}:{val}(+{add})")
+            sb.add(add, f"{field}:{val}")
 
-    # Reputation
-    rep = str(row.get("user_reputation", "new")).lower()
+def _apply_user_reputation(sb: ScoreBuilder, rep: str, cfg: Dict[str, Any]):
     rep_add = cfg["score_weights"]["user_reputation"].get(rep, 0)
-    score += rep_add
     if rep_add:
-        reasons.append(f"user_reputation:{rep}({('+' if rep_add>=0 else '')}{rep_add})")
+        # conservar el formato original con signo cuando es negativo o positivo
+        sb.reasons.append(f"user_reputation:{rep}({('+' if rep_add >= 0 else '')}{rep_add})")
+        sb.score += rep_add
 
-    # Night hour
-    hr = int(row.get("hour", 12))
-    if is_night(hr):
-        add = cfg["score_weights"]["night_hour"]
-        score += add
-        reasons.append(f"night_hour:{hr}(+{add})")
+def _apply_night_hour(sb: ScoreBuilder, hour: int, cfg: Dict[str, Any]):
+    if is_night(hour):
+        sb.add(cfg["score_weights"]["night_hour"], f"night_hour:{hour}")
 
-    # Geo mismatch
-    bin_c = str(row.get("bin_country", "")).upper()
-    ip_c  = str(row.get("ip_country", "")).upper()
+def _apply_geo_mismatch(sb: ScoreBuilder, bin_c: str, ip_c: str, cfg: Dict[str, Any]):
     if bin_c and ip_c and bin_c != ip_c:
-        add = cfg["score_weights"]["geo_mismatch"]
-        score += add
-        reasons.append(f"geo_mismatch:{bin_c}!={ip_c}(+{add})")
+        sb.add(cfg["score_weights"]["geo_mismatch"], f"geo_mismatch:{bin_c}!={ip_c}")
 
-    # High amount for product type
-    amount = float(row.get("amount_mxn", 0.0))
-    ptype = str(row.get("product_type", "_default")).lower()
+def _apply_amount_and_newuser(sb: ScoreBuilder, amount: float, ptype: str, rep: str, cfg: Dict[str, Any]):
     if high_amount(amount, ptype, cfg["amount_thresholds"]):
         add = cfg["score_weights"]["high_amount"]
-        score += add
-        reasons.append(f"high_amount:{ptype}:{amount}(+{add})")
+        sb.add(add, f"high_amount:{ptype}:{amount}")
         if rep == "new":
             add2 = cfg["score_weights"]["new_user_high_amount"]
-            score += add2
-            reasons.append(f"new_user_high_amount(+{add2})")
+            sb.add(add2, "new_user_high_amount")
 
-    # Extreme latency
-    lat = int(row.get("latency_ms", 0))
-    if lat >= cfg["latency_ms_extreme"]:
-        add = cfg["score_weights"]["latency_extreme"]
-        score += add
-        reasons.append(f"latency_extreme:{lat}ms(+{add})")
+def _apply_latency_extreme(sb: ScoreBuilder, latency_ms: int, cfg: Dict[str, Any]):
+    if latency_ms >= cfg["latency_ms_extreme"]:
+        sb.add(cfg["score_weights"]["latency_extreme"], f"latency_extreme:{latency_ms}ms")
 
-    # Frequency buffer for trusted/recurrent
-    freq = int(row.get("customer_txn_30d", 0))
-    if rep in ("recurrent", "trusted") and freq >= 3 and score > 0:
-        score -= 1
-        reasons.append("frequency_buffer(-1)")
+def _apply_frequency_buffer(sb: ScoreBuilder, rep: str, freq_30d: int):
+    if rep in ("recurrent", "trusted") and freq_30d >= 3 and sb.score > 0:
+        # mantener literal el texto original
+        sb.score -= 1
+        sb.reasons.append("frequency_buffer(-1)")
 
-    # Decision mapping
+def _map_score_to_decision(score: int, cfg: Dict[str, Any]) -> str:
     if score >= cfg["score_to_decision"]["reject_at"]:
-        decision = DECISION_REJECTED
-    elif score >= cfg["score_to_decision"]["review_at"]:
-        decision = DECISION_IN_REVIEW
-    else:
-        decision = DECISION_ACCEPTED
+        return DECISION_REJECTED
+    if score >= cfg["score_to_decision"]["review_at"]:
+        return DECISION_IN_REVIEW
+    return DECISION_ACCEPTED
 
-    return {"decision": decision, "risk_score": int(score), "reasons": ";".join(reasons)}
+
+# === Función principal (refactor) ============================================
+def assess_row(row: pd.Series, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    # 1) Hard block early-return
+    if _hard_block(row, cfg):
+        return {
+            "decision": DECISION_REJECTED,
+            "risk_score": 100,
+            "reasons": "hard_block:chargebacks>=2+ip_high",
+        }
+
+    sb = ScoreBuilder()
+
+    # 2) Signals pre-normalizadas
+    rep = _as_lower_str(row.get("user_reputation", "new"), "new")
+    hour = _as_int(row.get("hour", 12), 12)
+    bin_c = _as_upper_str(row.get("bin_country", ""), "")
+    ip_c = _as_upper_str(row.get("ip_country", ""), "")
+    amount = _as_float(row.get("amount_mxn", 0.0), 0.0)
+    ptype = _as_lower_str(row.get("product_type", "_default"), "_default")
+    latency_ms = _as_int(row.get("latency_ms", 0), 0)
+    freq_30d = _as_int(row.get("customer_txn_30d", 0), 0)
+
+    # 3) Reglas
+    _apply_categorical_risks(sb, row, cfg)
+    _apply_user_reputation(sb, rep, cfg)
+    _apply_night_hour(sb, hour, cfg)
+    _apply_geo_mismatch(sb, bin_c, ip_c, cfg)
+    _apply_amount_and_newuser(sb, amount, ptype, rep, cfg)
+    _apply_latency_extreme(sb, latency_ms, cfg)
+    _apply_frequency_buffer(sb, rep, freq_30d)
+
+    # 4) Decisión
+    decision = _map_score_to_decision(sb.score, cfg)
+    return {"decision": decision, "risk_score": int(sb.score), "reasons": sb.text_reasons()}
+
+
 
 def run(input_csv: str, output_csv: str, config: Dict[str, Any] = None) -> pd.DataFrame:
     cfg = config or DEFAULT_CONFIG
